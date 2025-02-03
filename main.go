@@ -26,6 +26,7 @@ type ErrorResponse struct {
 }
 
 func main() {
+	http.HandleFunc("/", handleReadiness)
 	http.HandleFunc("/api/classify-number", routeHandler)
 	fmt.Println("server running on port 8000...")
 	http.ListenAndServe(":8000", nil)
@@ -151,4 +152,12 @@ func routeHandler(w http.ResponseWriter, r *http.Request) {
 		FunFact:     funFact,
 	}
 	json.NewEncoder(w).Encode(response)
+}
+
+func handleReadiness (w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "https://*, http://")
+	w.Header().Set("Content-Type", "application/json")
+
+	w.WriteHeader(200)
+	w.Write([]byte(`{"message": "Number Classification API is running"}`))
 }
