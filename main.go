@@ -4,26 +4,29 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
-
 	"net/http"
 	"strconv"
-	"strings"
+	
+	"sync"
+	"io"
 )
 
 type Response struct {
 	Number     int      `json:"number"`
-	IsPrime    bool    `json:"is_prime"`
+	IsPrime    bool     `json:"is_prime"`
 	IsPerfect  bool     `json:"is_perfect"`
 	Properties []string `json:"properties"`
 	DigitSum   int      `json:"digit_sum"`
 	FunFact    string   `json:"fun_fact"`
 }
 
-
 type ErrorResponse struct {
 	Number string `json:"number"`
 	Error  bool   `json:"error"`
 }
+
+var cache = make(map[int]Response) // Cache to store previously computed results
+var mu sync.RWMutex               // Mutex to protect the cache
 
 func main() {
 	http.HandleFunc("/", handleReadiness)
@@ -36,7 +39,13 @@ func isPrime(n int) bool {
 	if n < 2 {
 		return false
 	}
-	for i := 2; i <= int(math.Sqrt(float64(n))); i++ {
+	if n == 2 {
+		return true
+	}
+	if n%2 == 0 {
+		return false
+	}
+	for i := 3; i <= int(math.Sqrt(float64(n))); i += 2 {
 		if n%i == 0 {
 			return false
 		}
@@ -79,32 +88,25 @@ func calculateDigitSum(n int) int {
 	return sum
 }
 
-
-func fetchFunFact(number int) string {
+func fetchFunFact(number int, ch chan<- string) {
 	url := fmt.Sprintf("http://numbersapi.com/%d/math", number)
 	resp, err := http.Get(url)
 	if err != nil {
-		return "Fun fact unavailable"
+		ch <- "Fun fact unavailable"
+		return
 	}
 	defer resp.Body.Close()
 
-	var fact strings.Builder // grow string dynamically
-	
-	buf := make([]byte, 512) // a buffer to read the chunks of data 
-	for {
-		n, _ := resp.Body.Read(buf) // read up to 512 bytes
-		if n == 0 {
-			break
-		}
-		fact.Write(buf[:n]) // add the data to fact builder
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		ch <- "Error reading fun fact"
+		return
 	}
 
-	return fact.String()
+	ch <- string(data)
 }
 
-
 func routeHandler(w http.ResponseWriter, r *http.Request) {
-
 	w.Header().Set("Access-Control-Allow-Origin", "https://*, http://")
 	w.Header().Set("Content-Type", "application/json")
 
@@ -128,6 +130,15 @@ func routeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mu.RLock()
+	if cached, found := cache[number]; found {
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(cached)
+		mu.RUnlock()
+		return
+	}
+	mu.RUnlock()
+
 	// properties
 	properties := []string{}
 	if isArmstrong(number) {
@@ -140,9 +151,12 @@ func routeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	digitSum := calculateDigitSum(number)
-	funFact := fetchFunFact(number)
 
-	// response
+	ch := make(chan string)
+	go fetchFunFact(number, ch)
+
+	funFact := <-ch
+
 	response := Response{
 		Number:      number,
 		IsPrime:     isPrime(number),
@@ -151,10 +165,16 @@ func routeHandler(w http.ResponseWriter, r *http.Request) {
 		DigitSum:    digitSum,
 		FunFact:     funFact,
 	}
+
+	mu.Lock()
+	cache[number] = response
+	mu.Unlock()
+
+	w.WriteHeader(200)
 	json.NewEncoder(w).Encode(response)
 }
 
-func handleReadiness (w http.ResponseWriter, r *http.Request) {
+func handleReadiness(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "https://*, http://")
 	w.Header().Set("Content-Type", "application/json")
 
